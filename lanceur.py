@@ -8,6 +8,14 @@ IGNORE = ("Steamworks Common", "Steam Linux Runtime", "Proton")
 COVERS = ("library_600x900*.jpg", "library_capsule*.jpg", "library_header*.jpg")  # par ordre de préférence
 BG, CARD, HOVER, TEXT, MUTED, ACCENT, GREEN = "#0f1115", "#181b22", "#232836", "#e8eaf0", "#8a93a6", "#4c8dff", "#3ddc84"
 CW, CH = 160, 240
+SORTS = ("Nom", "Plus joués", "Récents")
+
+
+def sort_games(games, mode, save):
+    t, last = save["time"], save["last"]
+    key = {"Nom": lambda g: g["name"].lower(), "Plus joués": lambda g: -t.get(g["id"], 0),
+           "Récents": lambda g: -last.get(g["id"], 0)}[mode]
+    return sorted(games, key=lambda g: (key(g), g["name"].lower()))
 
 
 def kv(text, key):
@@ -147,6 +155,8 @@ class App(tk.Tk):
             self.save = {}
         self.save.setdefault("manual", [])
         self.save.setdefault("time", {})
+        self.save.setdefault("last", {})
+        self.sort = 0
         self.playing, self.cards, self.photos, self.all, self.cols = set(), {}, {}, [], 0
         self.lock = threading.Lock()
 
@@ -155,9 +165,12 @@ class App(tk.Tk):
         tk.Label(top, text="Mes jeux", fg=TEXT, bg=BG, font=("Segoe UI Semibold", 20)).pack(side="left")
         self.count = tk.Label(top, fg=MUTED, bg=BG, font=("Segoe UI", 10))
         self.count.pack(side="left", padx=12, pady=(8, 0))
-        for txt, cmd in (("⟳", self.refresh), ("+ Ajouter", self.add)):
-            tk.Button(top, text=txt, command=cmd, bg=CARD, fg=TEXT, activebackground=HOVER, activeforeground=TEXT,
-                      relief="flat", bd=0, padx=14, pady=6, font=("Segoe UI", 10), cursor="hand2").pack(side="right", padx=(8, 0))
+        self.sortbtn = None
+        for txt, cmd in (("⟳", self.refresh), ("+ Ajouter", self.add), ("Tri : Nom", self.cycle_sort)):
+            b = tk.Button(top, text=txt, command=cmd, bg=CARD, fg=TEXT, activebackground=HOVER, activeforeground=TEXT,
+                      relief="flat", bd=0, padx=14, pady=6, font=("Segoe UI", 10), cursor="hand2")
+            b.pack(side="right", padx=(8, 0))
+            self.sortbtn = b if txt.startswith("Tri") else self.sortbtn
         self.q = tk.StringVar()
         self.q.trace_add("write", lambda *a: self.layout(True))
         tk.Entry(top, textvariable=self.q, bg=CARD, fg=TEXT, insertbackground=TEXT, relief="flat",
@@ -174,6 +187,8 @@ class App(tk.Tk):
         self.cv.create_window(0, 0, window=self.grid_f, anchor="nw")
         self.cv.bind("<Configure>", lambda e: self.layout())
         self.bind_all("<MouseWheel>", lambda e: self.cv.yview_scroll(-e.delta // 120 * 2, "units"))
+        self.bind("<F11>", self.toggle_fullscreen)
+        self.bind("<Escape>", lambda e: self.attributes("-fullscreen", False))
         self.menu = tk.Menu(self, tearoff=0)
         self.refresh()
         self.tick()
@@ -192,7 +207,7 @@ class App(tk.Tk):
 
     def refresh(self):
         g = scan_steam(steam_root()) + scan_epic() + [manual_game(p) for p in self.save["manual"]]
-        self.all = sorted(g, key=lambda x: x["name"].lower())
+        self.all = g
         self.photos = {}
         self.layout(True)
 
@@ -208,7 +223,7 @@ class App(tk.Tk):
             c.destroy()
         self.cards = {}
         q = self.q.get().lower()
-        shown = [g for g in self.all if q in g["name"].lower()]
+        shown = [g for g in sort_games(self.all, SORTS[self.sort], self.save) if q in g["name"].lower()]
         self.count.configure(text=f"{len(shown)} jeu{'x' if len(shown) > 1 else ''}")
         for i, g in enumerate(shown):
             if g["id"] not in self.photos:
@@ -241,6 +256,14 @@ class App(tk.Tk):
         if not once:
             self.after(2000, self.tick)
 
+    def cycle_sort(self):
+        self.sort = (self.sort + 1) % len(SORTS)
+        self.sortbtn.configure(text="Tri : " + SORTS[self.sort])
+        self.layout(True)
+
+    def toggle_fullscreen(self, _=None):
+        self.attributes("-fullscreen", not self.attributes("-fullscreen"))  # mode plein écran / canapé
+
     def context(self, e, g):
         self.menu.delete(0, "end")
         self.menu.add_command(label="Ouvrir le dossier", command=lambda: os.path.isdir(g["dir"]) and os.startfile(g["dir"]))
@@ -270,6 +293,7 @@ class App(tk.Tk):
         except OSError as e:
             messagebox.showerror("Lancement impossible", f"{g['name']} : {e}")
             return
+        self.save["last"][g["id"]] = time.time()
         self.playing.add(g["id"])
         self.tick(once=True)
 

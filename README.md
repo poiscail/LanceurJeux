@@ -7,7 +7,7 @@ Lanceur de jeux unifié pour Windows : détecte les jeux Steam et Epic Games, ac
 Double-cliquer sur `LanceurJeux.exe` (rien à installer). Depuis le code : `pip install pillow` puis `Lancer.bat`.
 
 - Clic sur un jeu : il se lance, son temps de jeu est compté (« ● En cours » pendant la partie).
-- Recherche en haut ; **+ Ajouter** : ajoute un jeu ou émulateur (.exe) ; **⟳** : relit Steam et Epic.
+- Recherche en haut ; **Tri** : nom, plus joués, récents ; **+ Ajouter** : ajoute un jeu ou émulateur (.exe) ; **⟳** : relit Steam et Epic ; **F11** : plein écran.
 - Clic droit : ouvrir le dossier, ou retirer un jeu ajouté à la main.
 
 Données (jeux ajoutés, temps de jeu) : `%APPDATA%\LanceurJeux\data.json`.

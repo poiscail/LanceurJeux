@@ -49,5 +49,11 @@ app = lanceur.App(); app.update()
 assert len(app.cards) == len(app.all) >= len(steam)
 app.q.set("zzzz-introuvable"); app.update(); assert not app.cards
 app.q.set(""); app.update(); assert len(app.cards) == len(app.all)
+sv = {"time": {"a": 5, "b": 90}, "last": {"a": 200, "b": 100}}
+gs = [{"id": "a", "name": "Zed"}, {"id": "b", "name": "Alpha"}, {"id": "c", "name": "Beta"}]
+assert [x["id"] for x in lanceur.sort_games(gs, "Nom", sv)] == ["b", "c", "a"]
+assert [x["id"] for x in lanceur.sort_games(gs, "Plus joués", sv)] == ["b", "a", "c"]
+assert [x["id"] for x in lanceur.sort_games(gs, "Récents", sv)] == ["a", "b", "c"]
+app.cycle_sort(); app.update(); assert len(app.cards) == len(app.all)
 app.destroy()
 print("OK", [x["name"] for x in steam])
