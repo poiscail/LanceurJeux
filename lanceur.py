@@ -1,5 +1,5 @@
 """Lanceur de jeux unifié : Steam, Epic, jeux ajoutés à la main. Temps de jeu par jeu."""
-import ctypes, glob, json, os, re, threading, time, tkinter as tk
+import ctypes, glob, json, os, re, sys, threading, time, tkinter as tk
 from ctypes import wintypes
 from tkinter import filedialog
 
@@ -184,6 +184,10 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Lanceur de jeux")
+        try:
+            self.iconbitmap(os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))), "icone.ico"))
+        except tk.TclError:
+            pass
         self.geometry("1050x720")
         self.minsize(520, 400)
         self.configure(bg=BG)
