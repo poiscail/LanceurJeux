@@ -58,14 +58,29 @@ assert isinstance(lanceur.steam_ready(), bool)
 # Interface : s'ouvre, affiche les jeux, recherche et lancement protégé
 lanceur.DATA = os.path.join(d, "data.json")
 app = lanceur.App(); app.update()
-assert len(app.cards) == len(app.all) >= len(steam)
-app.q.set("zzzz-introuvable"); app.update(); assert not app.cards
-app.q.set(""); app.update(); assert len(app.cards) == len(app.all)
+assert len(app.shown) == len(app.all) >= len(steam)
+app.q.set("zzzz-introuvable"); app.update(); assert not app.shown
+app.q.set(""); app.update(); assert len(app.shown) == len(app.all)
 sv = {"time": {"a": 5, "b": 90}, "last": {"a": 200, "b": 100}}
 gs = [{"id": "a", "name": "Zed"}, {"id": "b", "name": "Alpha"}, {"id": "c", "name": "Beta"}]
 assert [x["id"] for x in lanceur.sort_games(gs, "Nom", sv)] == ["b", "c", "a"]
 assert [x["id"] for x in lanceur.sort_games(gs, "Plus joués", sv)] == ["b", "a", "c"]
 assert [x["id"] for x in lanceur.sort_games(gs, "Récents", sv)] == ["a", "b", "c"]
-app.cycle_sort(); app.update(); assert len(app.cards) == len(app.all)
+app.cycle_sort(); app.update(); assert len(app.shown) == len(app.all)
+# Vrai lancement par l'appli : fenêtre ouverte, "en cours", temps compté, carte libérée à la fermeture
+lanceur.WAIT, lanceur.STEP = 20, 1
+cmd = os.path.join(game, "faux_jeu2.exe"); shutil.copy(r"C:\Windows\System32\cmd.exe", cmd)
+app.save["manual"].append(cmd); app.refresh(); app.update()
+gm = next(x for x in app.all if x["cmd"] == cmd)
+app.launch(gm)
+for _ in range(12):
+    app.update(); time.sleep(0.5)
+assert gm["id"] in app.playing and gm["id"] not in app.status  # démarré, plus en "Lancement..."
+subprocess.run(["taskkill", "/F", "/IM", "faux_jeu2.exe"], capture_output=True)
+for _ in range(20):
+    app.update(); time.sleep(0.5)
+    if gm["id"] not in app.playing:
+        break
+assert gm["id"] not in app.playing and app.save["time"][gm["id"]] > 3
 app.destroy()
 print("OK", [x["name"] for x in steam])

@@ -8,6 +8,7 @@ IGNORE = ("Steamworks Common", "Steam Linux Runtime", "Proton")
 COVERS = ("library_600x900*.jpg", "library_capsule*.jpg", "library_header*.jpg")  # par ordre de préférence
 BG, CARD, HOVER, TEXT, MUTED, ACCENT, GREEN = "#0f1115", "#181b22", "#232836", "#e8eaf0", "#8a93a6", "#4c8dff", "#3ddc84"
 CW, CH = 160, 240
+WAIT, STEP = 180, 5  # attente du démarrage d'un jeu (s) / pas de comptage du temps (s)
 SORTS = ("Nom", "Plus joués", "Récents")
 
 
@@ -55,7 +56,7 @@ def scan_steam(root):
         for f in glob.glob(os.path.join(lib, "steamapps", "appmanifest_*.acf")):
             t = open(f, encoding="utf-8", errors="ignore").read()
             name, appid, d = kv(t, "name"), kv(t, "appid"), kv(t, "installdir")
-            if not name or name.startswith(IGNORE):
+            if not name or not d or name.startswith(IGNORE):
                 continue
             games.append({"id": "steam:" + appid, "name": name, "cmd": "steam://rungameid/" + appid,
                           "dir": os.path.join(lib, "steamapps", "common", d), "cover": find_cover(root, appid)})
@@ -144,13 +145,15 @@ def running_in(folder):
     return False
 
 
-def watch(folder, add, wait=180, step=5):
+def watch(folder, add, wait=180, step=5, on_start=None):
     """Attend que le jeu démarre (max `wait` s), puis appelle add(secondes) tant qu'il tourne."""
     t0 = time.time()
     while not running_in(folder):
         if time.time() - t0 > wait:
             return
         time.sleep(1)
+    if on_start:
+        on_start()
     last = time.time()
     while running_in(folder):
         time.sleep(step)
@@ -195,14 +198,16 @@ class App(tk.Tk):
             self.save = json.load(open(DATA, encoding="utf-8"))
         except (OSError, ValueError):
             self.save = {}
+        if not isinstance(self.save, dict):
+            self.save = {}
         self.save.setdefault("manual", [])
         self.save.setdefault("time", {})
         self.save.setdefault("last", {})
         self.save.setdefault("steam_first", {})
         self.sort = 0
         self.status = {}
-        self.playing, self.cards, self.photos, self.all, self.cols = set(), {}, {}, [], 0
-        self.lock = threading.Lock()
+        self.playing, self.cards, self.frames, self.photos, self.all, self.shown, self.cols = set(), {}, {}, {}, [], [], 0
+        self.lock = threading.RLock()
 
         top = tk.Frame(self, bg=BG)
         top.pack(fill="x", padx=24, pady=(20, 8))
@@ -216,7 +221,7 @@ class App(tk.Tk):
             b.pack(side="right", padx=(8, 0))
             self.sortbtn = b if txt.startswith("Tri") else self.sortbtn
         self.q = tk.StringVar()
-        self.q.trace_add("write", lambda *a: self.layout(True))
+        self.q.trace_add("write", lambda *a: self.layout())
         tk.Entry(top, textvariable=self.q, bg=CARD, fg=TEXT, insertbackground=TEXT, relief="flat",
                  font=("Segoe UI", 11), width=22).pack(side="right", ipady=6, padx=8)
 
@@ -229,7 +234,7 @@ class App(tk.Tk):
         self.cv.pack(side="left", fill="both", expand=True)
         self.grid_f = tk.Frame(self.cv, bg=BG)
         self.cv.create_window(0, 0, window=self.grid_f, anchor="nw")
-        self.cv.bind("<Configure>", lambda e: self.layout())
+        self.cv.bind("<Configure>", lambda e: self.layout(keep=True))
         self.bind_all("<MouseWheel>", lambda e: self.cv.yview_scroll(-e.delta // 120 * 2, "units"))
         self.bind("<F11>", self.toggle_fullscreen)
         self.bind("<Escape>", lambda e: self.attributes("-fullscreen", False))
@@ -246,34 +251,19 @@ class App(tk.Tk):
             os.replace(tmp, DATA)  # écriture atomique : pas de fichier corrompu si on ferme en plein milieu
 
     def add_time(self, gid, sec):
-        self.save["time"][gid] = self.save["time"].get(gid, 0) + sec
-        self.persist()
+        with self.lock:  # un thread de comptage par jeu : on protège la sauvegarde
+            self.save["time"][gid] = self.save["time"].get(gid, 0) + sec
+            self.persist()
 
     def refresh(self):
-        g = scan_steam(steam_root()) + scan_epic() + scan_fivem() + [manual_game(p) for p in self.save["manual"]]
-        self.all = g
-        self.photos = {}
-        self.layout(True)
-
-    # --- affichage ---
-    def layout(self, rebuild=False):
-        w = self.cv.winfo_width()
-        cols = max(1, w // (CW + 24))
-        if not rebuild and cols == self.cols:
-            return
         from PIL import ImageTk
-        self.cols = cols
+        self.all = scan_steam(steam_root()) + scan_epic() + scan_fivem() + [manual_game(p) for p in self.save["manual"]]
         for c in self.grid_f.winfo_children():
             c.destroy()
-        self.cards = {}
-        q = self.q.get().lower()
-        shown = [g for g in sort_games(self.all, SORTS[self.sort], self.save) if q in g["name"].lower()]
-        self.count.configure(text=f"{len(shown)} jeu{'x' if len(shown) > 1 else ''}")
-        for i, g in enumerate(shown):
-            if g["id"] not in self.photos:
-                self.photos[g["id"]] = ImageTk.PhotoImage(load_cover(g))
+        self.cards, self.frames, self.photos = {}, {}, {}
+        for g in self.all:  # les cartes sont créées une fois ; recherche et tri ne font que les replacer
+            self.photos[g["id"]] = ImageTk.PhotoImage(load_cover(g))
             f = tk.Frame(self.grid_f, bg=CARD, cursor="hand2", padx=8, pady=8)
-            f.grid(row=i // cols, column=i % cols, padx=8, pady=8, sticky="n")
             img = tk.Label(f, image=self.photos[g["id"]], bg=CARD)
             name = tk.Label(f, text=g["name"], fg=TEXT, bg=CARD, wraplength=CW, justify="left", anchor="w",
                             font=("Segoe UI Semibold", 10), height=2)
@@ -286,7 +276,23 @@ class App(tk.Tk):
                 wd.bind("<Button-3>", lambda e, g=g: self.context(e, g))
                 wd.bind("<Enter>", lambda e, ws=widgets: [x.configure(bg=HOVER) for x in ws])
                 wd.bind("<Leave>", lambda e, ws=widgets: [x.configure(bg=CARD) for x in ws])
-            self.cards[g["id"]] = t
+            self.frames[g["id"]], self.cards[g["id"]] = f, t
+        self.layout()
+
+    # --- affichage ---
+    def layout(self, keep=False):
+        """Place les cartes selon recherche, tri et largeur. keep=True : rien à faire si les colonnes n'ont pas changé."""
+        cols = max(1, self.cv.winfo_width() // (CW + 24))
+        if keep and cols == self.cols:
+            return
+        self.cols = cols
+        q = self.q.get().lower()
+        self.shown = [g for g in sort_games(self.all, SORTS[self.sort], self.save) if q in g["name"].lower()]
+        for f in self.frames.values():
+            f.grid_forget()
+        for i, g in enumerate(self.shown):
+            self.frames[g["id"]].grid(row=i // cols, column=i % cols, padx=8, pady=8, sticky="n")
+        self.count.configure(text=f"{len(self.shown)} jeu{'x' if len(self.shown) > 1 else ''}")
         self.grid_f.update_idletasks()
         self.cv.configure(scrollregion=(0, 0, self.grid_f.winfo_reqwidth(), self.grid_f.winfo_reqheight()))
         self.tick(once=True)
@@ -305,7 +311,7 @@ class App(tk.Tk):
     def cycle_sort(self):
         self.sort = (self.sort + 1) % len(SORTS)
         self.sortbtn.configure(text="Tri : " + SORTS[self.sort])
-        self.layout(True)
+        self.layout()
 
     def toggle_fullscreen(self, _=None):
         self.attributes("-fullscreen", not self.attributes("-fullscreen"))  # mode plein écran / canapé
@@ -326,46 +332,56 @@ class App(tk.Tk):
         p = filedialog.askopenfilename(filetypes=[("Programme", "*.exe")])
         p = os.path.normpath(p) if p else ""
         if p and p not in self.save["manual"]:
-            self.save["manual"].append(p)
-            self.persist()
+            with self.lock:
+                self.save["manual"].append(p)
+                self.persist()
             self.refresh()
 
     def toggle_steam(self, g, on):
-        self.save["steam_first"][g["id"]] = not on
-        self.persist()
+        with self.lock:
+            self.save["steam_first"][g["id"]] = not on
+            self.persist()
 
     def remove(self, g):
-        self.save["manual"].remove(g["cmd"])
-        self.persist()
+        with self.lock:
+            self.save["manual"].remove(g["cmd"])
+            self.persist()
         self.refresh()
 
+    def flash(self, gid, text):
+        self.status[gid] = text
+        time.sleep(4)
+        self.status.pop(gid, None)
+
     def launch(self, g):
-        if g["id"] in self.playing:  # évite de compter deux fois le même jeu
+        gid = g["id"]
+        if gid in self.playing:  # évite de compter deux fois le même jeu
             return
-        self.save["last"][g["id"]] = time.time()
-        self.playing.add(g["id"])
+        with self.lock:
+            self.save["last"][gid] = time.time()
+        self.playing.add(gid)
 
         def run():
-            if self.save["steam_first"].get(g["id"], g.get("steam", False)):
-                self.status[g["id"]] = "Démarrage de Steam…"
-                ok = ensure_steam()
-                self.status.pop(g["id"], None)
-                if not ok:
-                    self.status[g["id"]] = "Steam n'a pas démarré"
-                    time.sleep(4)
-                    self.status.pop(g["id"], None)
-                    self.playing.discard(g["id"])
-                    return
             try:
-                os.startfile(g["cmd"], cwd=g["dir"]) if g["id"].startswith(("man:", "fivem")) else os.startfile(g["cmd"])
-            except OSError as e:
-                self.status[g["id"]] = "Lancement impossible"
-                time.sleep(4)
-                self.status.pop(g["id"], None)
-                self.playing.discard(g["id"])
-                return
-            watch(g["dir"], lambda s: self.add_time(g["id"], s))
-            self.playing.discard(g["id"])
+                if self.save["steam_first"].get(gid, g.get("steam", False)):
+                    self.status[gid] = "Démarrage de Steam…"
+                    try:
+                        ok = ensure_steam()
+                    except OSError:
+                        ok = False
+                    self.status.pop(gid, None)
+                    if not ok:
+                        return self.flash(gid, "Steam n'a pas démarré")
+                self.status[gid] = "Lancement…"
+                try:
+                    os.startfile(g["cmd"], cwd=g["dir"]) if gid.startswith(("man:", "fivem")) else os.startfile(g["cmd"])
+                except OSError:
+                    return self.flash(gid, "Lancement impossible")
+                watch(g["dir"], lambda s: self.add_time(gid, s), wait=WAIT, step=STEP,
+                      on_start=lambda: self.status.pop(gid, None))
+            finally:  # quoi qu'il arrive, la carte redevient cliquable
+                self.status.pop(gid, None)
+                self.playing.discard(gid)
 
         threading.Thread(target=run, daemon=True).start()
         self.tick(once=True)
