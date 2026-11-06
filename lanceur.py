@@ -1,7 +1,7 @@
 """Lanceur de jeux unifié : Steam, Epic, jeux ajoutés à la main. Temps de jeu par jeu."""
 import ctypes, glob, json, os, re, threading, time, tkinter as tk
 from ctypes import wintypes
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 
 DATA = os.path.join(os.environ.get("APPDATA", "."), "LanceurJeux", "data.json")
 IGNORE = ("Steamworks Common", "Steam Linux Runtime", "Proton")
@@ -74,6 +74,44 @@ def scan_epic(manifests=os.path.expandvars(r"%ProgramData%\Epic\EpicGamesLaunche
         except (OSError, KeyError, ValueError):
             pass
     return games
+
+
+def scan_fivem(path=os.path.expandvars(r"%LOCALAPPDATA%\FiveM\FiveM.exe")):
+    """FiveM n'a pas de manifeste : on le cherche à son emplacement habituel. Il a besoin de Steam (GTA V)."""
+    g = manual_game(path) if os.path.isfile(path) else None
+    return [dict(g, id="fivem", name="FiveM", steam=True)] if g else []
+
+
+def steam_ready():
+    """Steam est lancé ET entièrement chargé (connecté) : le pid enregistré est bien celui de steam.exe."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam\ActiveProcess") as k:
+            pid, user = winreg.QueryValueEx(k, "pid")[0], winreg.QueryValueEx(k, "ActiveUser")[0]
+    except OSError:
+        return False
+    kern = ctypes.windll.kernel32
+    kern.OpenProcess.restype = wintypes.HANDLE
+    h = kern.OpenProcess(0x1000, False, pid)
+    if not h:
+        return False  # pid périmé : Steam est fermé
+    buf, sz = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+    ok = kern.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(sz))
+    kern.CloseHandle(h)
+    return bool(user) and bool(ok) and os.path.basename(buf.value).lower() == "steam.exe"
+
+
+def ensure_steam(ready=steam_ready, start=None, timeout=240, step=1):
+    """Lance Steam s'il n'est pas prêt et attend son chargement complet. Renvoie False si trop long."""
+    if ready():
+        return True
+    (start or (lambda: os.startfile("steam://open/main")))()
+    t0 = time.time()
+    while not ready():
+        if time.time() - t0 > timeout:
+            return False
+        time.sleep(step)
+    return True
 
 
 def manual_game(path):
@@ -156,7 +194,9 @@ class App(tk.Tk):
         self.save.setdefault("manual", [])
         self.save.setdefault("time", {})
         self.save.setdefault("last", {})
+        self.save.setdefault("steam_first", {})
         self.sort = 0
+        self.status = {}
         self.playing, self.cards, self.photos, self.all, self.cols = set(), {}, {}, [], 0
         self.lock = threading.Lock()
 
@@ -206,7 +246,7 @@ class App(tk.Tk):
         self.persist()
 
     def refresh(self):
-        g = scan_steam(steam_root()) + scan_epic() + [manual_game(p) for p in self.save["manual"]]
+        g = scan_steam(steam_root()) + scan_epic() + scan_fivem() + [manual_game(p) for p in self.save["manual"]]
         self.all = g
         self.photos = {}
         self.layout(True)
@@ -249,7 +289,9 @@ class App(tk.Tk):
 
     def tick(self, once=False):
         for gid, t in self.cards.items():
-            if gid in self.playing:
+            if gid in self.status:
+                t.configure(text=self.status[gid], fg=ACCENT)
+            elif gid in self.playing:
                 t.configure(text="● En cours · " + fmt(self.save["time"].get(gid, 0)), fg=GREEN)
             else:
                 t.configure(text=fmt(self.save["time"].get(gid, 0)), fg=MUTED)
@@ -267,6 +309,10 @@ class App(tk.Tk):
     def context(self, e, g):
         self.menu.delete(0, "end")
         self.menu.add_command(label="Ouvrir le dossier", command=lambda: os.path.isdir(g["dir"]) and os.startfile(g["dir"]))
+        if not g["id"].startswith(("steam:", "epic:")):
+            on = self.save["steam_first"].get(g["id"], g.get("steam", False))
+            self.menu.add_command(label=("✓ " if on else "") + "Lancer Steam d'abord",
+                                  command=lambda: self.toggle_steam(g, on))
         if g["id"].startswith("man:"):
             self.menu.add_command(label="Retirer de la liste", command=lambda: self.remove(g))
         self.menu.tk_popup(e.x_root, e.y_root)
@@ -280,6 +326,10 @@ class App(tk.Tk):
             self.persist()
             self.refresh()
 
+    def toggle_steam(self, g, on):
+        self.save["steam_first"][g["id"]] = not on
+        self.persist()
+
     def remove(self, g):
         self.save["manual"].remove(g["cmd"])
         self.persist()
@@ -288,20 +338,33 @@ class App(tk.Tk):
     def launch(self, g):
         if g["id"] in self.playing:  # évite de compter deux fois le même jeu
             return
-        try:
-            os.startfile(g["cmd"], cwd=g["dir"]) if g["id"].startswith("man:") else os.startfile(g["cmd"])
-        except OSError as e:
-            messagebox.showerror("Lancement impossible", f"{g['name']} : {e}")
-            return
         self.save["last"][g["id"]] = time.time()
         self.playing.add(g["id"])
-        self.tick(once=True)
 
         def run():
+            if self.save["steam_first"].get(g["id"], g.get("steam", False)):
+                self.status[g["id"]] = "Démarrage de Steam…"
+                ok = ensure_steam()
+                self.status.pop(g["id"], None)
+                if not ok:
+                    self.status[g["id"]] = "Steam n'a pas démarré"
+                    time.sleep(4)
+                    self.status.pop(g["id"], None)
+                    self.playing.discard(g["id"])
+                    return
+            try:
+                os.startfile(g["cmd"], cwd=g["dir"]) if g["id"].startswith(("man:", "fivem")) else os.startfile(g["cmd"])
+            except OSError as e:
+                self.status[g["id"]] = "Lancement impossible"
+                time.sleep(4)
+                self.status.pop(g["id"], None)
+                self.playing.discard(g["id"])
+                return
             watch(g["dir"], lambda s: self.add_time(g["id"], s))
             self.playing.discard(g["id"])
 
         threading.Thread(target=run, daemon=True).start()
+        self.tick(once=True)
 
 
 if __name__ == "__main__":

@@ -43,6 +43,18 @@ assert time.time() - t0 < 5 and len(total) < 20
 m = lanceur.manual_game(exe)
 assert m["name"] == "faux_jeu" and m["dir"] == game and m["id"] == "man:" + exe
 
+# FiveM : détecté avec "Steam d'abord"
+fv = lanceur.scan_fivem(exe)
+assert fv[0]["name"] == "FiveM" and fv[0]["steam"] and lanceur.scan_fivem(os.path.join(d, "nope.exe")) == []
+
+# Steam d'abord : déjà prêt -> rien lancé ; sinon lancé une fois puis attente du chargement complet
+started = []
+assert lanceur.ensure_steam(ready=lambda: True, start=lambda: started.append(1)) and not started
+calls = iter([False, False, False, True])
+assert lanceur.ensure_steam(ready=lambda: next(calls), start=lambda: started.append(1), step=0.01) and started == [1]
+assert not lanceur.ensure_steam(ready=lambda: False, start=lambda: None, timeout=0.2, step=0.05)
+assert isinstance(lanceur.steam_ready(), bool)
+
 # Interface : s'ouvre, affiche les jeux, recherche et lancement protégé
 lanceur.DATA = os.path.join(d, "data.json")
 app = lanceur.App(); app.update()
