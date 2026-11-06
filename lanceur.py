@@ -1,10 +1,13 @@
 """Lanceur de jeux unifié : Steam, Epic, jeux ajoutés à la main. Temps de jeu par jeu."""
 import ctypes, glob, json, os, re, threading, time, tkinter as tk
 from ctypes import wintypes
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 DATA = os.path.join(os.environ.get("APPDATA", "."), "LanceurJeux", "data.json")
 IGNORE = ("Steamworks Common", "Steam Linux Runtime", "Proton")
+COVERS = ("library_600x900*.jpg", "library_capsule*.jpg", "library_header*.jpg")  # par ordre de préférence
+BG, CARD, HOVER, TEXT, MUTED, ACCENT, GREEN = "#0f1115", "#181b22", "#232836", "#e8eaf0", "#8a93a6", "#4c8dff", "#3ddc84"
+CW, CH = 160, 240
 
 
 def kv(text, key):
@@ -19,6 +22,15 @@ def steam_root():
             return os.path.normpath(winreg.QueryValueEx(k, "SteamPath")[0])
     except OSError:
         return None
+
+
+def find_cover(root, appid):
+    base = os.path.join(root, "appcache", "librarycache", appid)
+    for pat in COVERS:
+        hits = glob.glob(os.path.join(base, "**", pat), recursive=True)
+        if hits:
+            return hits[0]
+    return ""
 
 
 def scan_steam(root):
@@ -37,9 +49,8 @@ def scan_steam(root):
             name, appid, d = kv(t, "name"), kv(t, "appid"), kv(t, "installdir")
             if not name or name.startswith(IGNORE):
                 continue
-            cover = os.path.join(root, "appcache", "librarycache", appid, "library_600x900.jpg")
             games.append({"id": "steam:" + appid, "name": name, "cmd": "steam://rungameid/" + appid,
-                          "dir": os.path.join(lib, "steamapps", "common", d), "cover": cover})
+                          "dir": os.path.join(lib, "steamapps", "common", d), "cover": find_cover(root, appid)})
     return games
 
 
@@ -57,9 +68,14 @@ def scan_epic(manifests=os.path.expandvars(r"%ProgramData%\Epic\EpicGamesLaunche
     return games
 
 
+def manual_game(path):
+    return {"id": "man:" + path, "name": os.path.splitext(os.path.basename(path))[0], "cmd": path,
+            "dir": os.path.dirname(path), "cover": ""}
+
+
 def fmt(sec):
     h, m = divmod(int(sec) // 60, 60)
-    return f"{h} h {m:02d} min" if h else f"{m} min"
+    return f"{h} h {m:02d} min" if h else (f"{m} min" if m else ("< 1 min" if sec else "Jamais lancé"))
 
 
 def running_in(folder):
@@ -82,90 +98,191 @@ def running_in(folder):
     return False
 
 
+def watch(folder, add, wait=180, step=5):
+    """Attend que le jeu démarre (max `wait` s), puis appelle add(secondes) tant qu'il tourne."""
+    t0 = time.time()
+    while not running_in(folder):
+        if time.time() - t0 > wait:
+            return
+        time.sleep(1)
+    last = time.time()
+    while running_in(folder):
+        time.sleep(step)
+        now = time.time()
+        add(now - last)
+        last = now
+
+
+def placeholder(name):
+    from PIL import Image, ImageDraw, ImageFont
+    h = sum(map(ord, name)) % 360
+    im = Image.new("RGB", (CW, CH), "#20242e")
+    d = ImageDraw.Draw(im)
+    try:
+        font = ImageFont.truetype("segoeuib.ttf", 72)
+    except OSError:
+        font = ImageFont.load_default()
+    d.text((CW / 2, CH / 2), name[:1].upper(), fill=f"hsl({h},45%,55%)", font=font, anchor="mm")
+    return im
+
+
+def load_cover(g):
+    from PIL import Image, ImageOps
+    try:
+        return ImageOps.fit(Image.open(g["cover"]).convert("RGB"), (CW, CH))  # recadre sans déformer
+    except (OSError, ValueError):
+        return placeholder(g["name"])
+
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Lanceur de jeux")
-        self.geometry("1000x700")
-        self.configure(bg="#14161a")
+        self.geometry("1050x720")
+        self.minsize(520, 400)
+        self.configure(bg=BG)
         try:
             self.save = json.load(open(DATA, encoding="utf-8"))
         except (OSError, ValueError):
-            self.save = {"manual": [], "time": {}}
-        bar = tk.Frame(self, bg="#14161a")
-        bar.pack(fill="x", padx=12, pady=8)
-        for txt, cmd in (("Actualiser", self.refresh), ("Ajouter un jeu (.exe)", self.add)):
-            tk.Button(bar, text=txt, command=cmd, bg="#2a2f3a", fg="white", relief="flat", padx=10).pack(side="left", padx=4)
-        self.cv = tk.Canvas(self, bg="#14161a", highlightthickness=0)
-        self.cv.pack(fill="both", expand=True)
-        self.grid_f = tk.Frame(self.cv, bg="#14161a")
+            self.save = {}
+        self.save.setdefault("manual", [])
+        self.save.setdefault("time", {})
+        self.playing, self.cards, self.photos, self.all, self.cols = set(), {}, {}, [], 0
+        self.lock = threading.Lock()
+
+        top = tk.Frame(self, bg=BG)
+        top.pack(fill="x", padx=24, pady=(20, 8))
+        tk.Label(top, text="Mes jeux", fg=TEXT, bg=BG, font=("Segoe UI Semibold", 20)).pack(side="left")
+        self.count = tk.Label(top, fg=MUTED, bg=BG, font=("Segoe UI", 10))
+        self.count.pack(side="left", padx=12, pady=(8, 0))
+        for txt, cmd in (("⟳", self.refresh), ("+ Ajouter", self.add)):
+            tk.Button(top, text=txt, command=cmd, bg=CARD, fg=TEXT, activebackground=HOVER, activeforeground=TEXT,
+                      relief="flat", bd=0, padx=14, pady=6, font=("Segoe UI", 10), cursor="hand2").pack(side="right", padx=(8, 0))
+        self.q = tk.StringVar()
+        self.q.trace_add("write", lambda *a: self.layout(True))
+        tk.Entry(top, textvariable=self.q, bg=CARD, fg=TEXT, insertbackground=TEXT, relief="flat",
+                 font=("Segoe UI", 11), width=22).pack(side="right", ipady=6, padx=8)
+
+        wrap = tk.Frame(self, bg=BG)
+        wrap.pack(fill="both", expand=True, padx=(24, 8))
+        self.cv = tk.Canvas(wrap, bg=BG, highlightthickness=0)
+        sb = tk.Scrollbar(wrap, command=self.cv.yview)
+        self.cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.cv.pack(side="left", fill="both", expand=True)
+        self.grid_f = tk.Frame(self.cv, bg=BG)
         self.cv.create_window(0, 0, window=self.grid_f, anchor="nw")
-        self.bind_all("<MouseWheel>", lambda e: self.cv.yview_scroll(-e.delta // 120, "units"))
-        self.imgs = []
+        self.cv.bind("<Configure>", lambda e: self.layout())
+        self.bind_all("<MouseWheel>", lambda e: self.cv.yview_scroll(-e.delta // 120 * 2, "units"))
+        self.menu = tk.Menu(self, tearoff=0)
         self.refresh()
+        self.tick()
 
+    # --- données ---
     def persist(self):
-        os.makedirs(os.path.dirname(DATA), exist_ok=True)
-        json.dump(self.save, open(DATA, "w", encoding="utf-8"))
+        with self.lock:
+            os.makedirs(os.path.dirname(DATA), exist_ok=True)
+            tmp = DATA + ".tmp"
+            json.dump(self.save, open(tmp, "w", encoding="utf-8"))
+            os.replace(tmp, DATA)  # écriture atomique : pas de fichier corrompu si on ferme en plein milieu
 
-    def games(self):
-        g = scan_steam(steam_root()) + scan_epic()
-        for p in self.save["manual"]:
-            g.append({"id": "man:" + p, "name": os.path.splitext(os.path.basename(p))[0], "cmd": p,
-                      "dir": os.path.dirname(p), "cover": ""})
-        return sorted(g, key=lambda x: x["name"].lower())
+    def add_time(self, gid, sec):
+        self.save["time"][gid] = self.save["time"].get(gid, 0) + sec
+        self.persist()
 
     def refresh(self):
-        from PIL import Image, ImageTk
-        for w in self.grid_f.winfo_children():
-            w.destroy()
-        self.imgs = []
-        cols = 5
-        for i, g in enumerate(self.games()):
-            try:
-                im = Image.open(g["cover"]).resize((150, 225))
-            except (OSError, ValueError):
-                im = Image.new("RGB", (150, 225), "#2a2f3a")
-            ph = ImageTk.PhotoImage(im)
-            self.imgs.append(ph)
-            f = tk.Frame(self.grid_f, bg="#14161a", cursor="hand2")
-            f.grid(row=i // cols, column=i % cols, padx=8, pady=8)
-            lbl = tk.Label(f, image=ph, bg="#14161a")
-            name = tk.Label(f, text=g["name"], fg="white", bg="#14161a", wraplength=150)
-            t = tk.Label(f, text=fmt(self.save["time"].get(g["id"], 0)), fg="#8a93a6", bg="#14161a")
-            g["label"] = t
-            for w in (f, lbl, name, t):
-                w.bind("<Button-1>", lambda e, g=g: self.launch(g))
-            lbl.pack()
-            name.pack()
-            t.pack()
+        g = scan_steam(steam_root()) + scan_epic() + [manual_game(p) for p in self.save["manual"]]
+        self.all = sorted(g, key=lambda x: x["name"].lower())
+        self.photos = {}
+        self.layout(True)
+
+    # --- affichage ---
+    def layout(self, rebuild=False):
+        w = self.cv.winfo_width()
+        cols = max(1, w // (CW + 24))
+        if not rebuild and cols == self.cols:
+            return
+        from PIL import ImageTk
+        self.cols = cols
+        for c in self.grid_f.winfo_children():
+            c.destroy()
+        self.cards = {}
+        q = self.q.get().lower()
+        shown = [g for g in self.all if q in g["name"].lower()]
+        self.count.configure(text=f"{len(shown)} jeu{'x' if len(shown) > 1 else ''}")
+        for i, g in enumerate(shown):
+            if g["id"] not in self.photos:
+                self.photos[g["id"]] = ImageTk.PhotoImage(load_cover(g))
+            f = tk.Frame(self.grid_f, bg=CARD, cursor="hand2", padx=8, pady=8)
+            f.grid(row=i // cols, column=i % cols, padx=8, pady=8, sticky="n")
+            img = tk.Label(f, image=self.photos[g["id"]], bg=CARD)
+            name = tk.Label(f, text=g["name"], fg=TEXT, bg=CARD, wraplength=CW, justify="left", anchor="w",
+                            font=("Segoe UI Semibold", 10), height=2)
+            t = tk.Label(f, fg=MUTED, bg=CARD, font=("Segoe UI", 9), anchor="w")
+            for lbl in (img, name, t):
+                lbl.pack(fill="x", pady=(0, 2))
+            widgets = (f, img, name, t)
+            for wd in widgets:
+                wd.bind("<Button-1>", lambda e, g=g: self.launch(g))
+                wd.bind("<Button-3>", lambda e, g=g: self.context(e, g))
+                wd.bind("<Enter>", lambda e, ws=widgets: [x.configure(bg=HOVER) for x in ws])
+                wd.bind("<Leave>", lambda e, ws=widgets: [x.configure(bg=CARD) for x in ws])
+            self.cards[g["id"]] = t
         self.grid_f.update_idletasks()
         self.cv.configure(scrollregion=(0, 0, self.grid_f.winfo_reqwidth(), self.grid_f.winfo_reqheight()))
+        self.tick(once=True)
 
+    def tick(self, once=False):
+        for gid, t in self.cards.items():
+            if gid in self.playing:
+                t.configure(text="● En cours · " + fmt(self.save["time"].get(gid, 0)), fg=GREEN)
+            else:
+                t.configure(text=fmt(self.save["time"].get(gid, 0)), fg=MUTED)
+        if not once:
+            self.after(2000, self.tick)
+
+    def context(self, e, g):
+        self.menu.delete(0, "end")
+        self.menu.add_command(label="Ouvrir le dossier", command=lambda: os.path.isdir(g["dir"]) and os.startfile(g["dir"]))
+        if g["id"].startswith("man:"):
+            self.menu.add_command(label="Retirer de la liste", command=lambda: self.remove(g))
+        self.menu.tk_popup(e.x_root, e.y_root)
+
+    # --- actions ---
     def add(self):
         p = filedialog.askopenfilename(filetypes=[("Programme", "*.exe")])
-        if p and os.path.normpath(p) not in self.save["manual"]:
-            self.save["manual"].append(os.path.normpath(p))
+        p = os.path.normpath(p) if p else ""
+        if p and p not in self.save["manual"]:
+            self.save["manual"].append(p)
             self.persist()
             self.refresh()
 
-    def launch(self, g):
-        os.startfile(g["cmd"])
-        threading.Thread(target=self.track, args=(g,), daemon=True).start()
+    def remove(self, g):
+        self.save["manual"].remove(g["cmd"])
+        self.persist()
+        self.refresh()
 
-    def track(self, g):
-        for _ in range(60):  # attend jusqu'à 60 s que le jeu démarre
-            if running_in(g["dir"]):
-                break
-            time.sleep(1)
-        else:
+    def launch(self, g):
+        if g["id"] in self.playing:  # évite de compter deux fois le même jeu
             return
-        while running_in(g["dir"]):
-            time.sleep(5)
-            self.save["time"][g["id"]] = self.save["time"].get(g["id"], 0) + 5
-            self.persist()
-            self.after(0, lambda: g["label"].configure(text=fmt(self.save["time"][g["id"]])))
+        try:
+            os.startfile(g["cmd"], cwd=g["dir"]) if g["id"].startswith("man:") else os.startfile(g["cmd"])
+        except OSError as e:
+            messagebox.showerror("Lancement impossible", f"{g['name']} : {e}")
+            return
+        self.playing.add(g["id"])
+        self.tick(once=True)
+
+        def run():
+            watch(g["dir"], lambda s: self.add_time(g["id"], s))
+            self.playing.discard(g["id"])
+
+        threading.Thread(target=run, daemon=True).start()
 
 
 if __name__ == "__main__":
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # texte net sur écrans haute résolution
+    except OSError:
+        pass
     App().mainloop()

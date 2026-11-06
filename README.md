@@ -1,18 +1,16 @@
 # LanceurJeux
 
-Lanceur de jeux unifié pour Windows : détecte les jeux Steam et Epic Games, accepte des jeux ajoutés à la main (.exe, émulateurs…), les affiche avec leur jaquette (Steam) et enregistre le temps de jeu de chacun.
+Lanceur de jeux unifié pour Windows : détecte les jeux Steam et Epic Games, accepte des jeux ajoutés à la main (.exe, émulateurs…), les affiche avec leur jaquette dans une interface sombre et enregistre le temps de jeu de chacun.
 
 ## Utilisation
 
-Prérequis : Python 3 et Pillow (`pip install pillow`).
+Double-cliquer sur `LanceurJeux.exe` (rien à installer). Depuis le code : `pip install pillow` puis `Lancer.bat`.
 
-Double-clic sur `Lancer.bat` (ou `python lanceur.py`).
+- Clic sur un jeu : il se lance, son temps de jeu est compté (« ● En cours » pendant la partie).
+- Recherche en haut ; **+ Ajouter** : ajoute un jeu ou émulateur (.exe) ; **⟳** : relit Steam et Epic.
+- Clic droit : ouvrir le dossier, ou retirer un jeu ajouté à la main.
 
-- Clic sur un jeu : il se lance et son temps de jeu est compté.
-- **Ajouter un jeu (.exe)** : ajoute un jeu ou un émulateur à la main.
-- **Actualiser** : relit les bibliothèques Steam et Epic.
-
-Les données (jeux ajoutés, temps de jeu) sont dans `%APPDATA%\LanceurJeux\data.json`.
+Données (jeux ajoutés, temps de jeu) : `%APPDATA%\LanceurJeux\data.json`.
 
 ## Test
 
